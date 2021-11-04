@@ -1,2 +1,7 @@
-# idris2-todomvc
-Experimental TodoMVC implementation in Idris2 using rhone-js
+# Idris2 • [TodoMVC](http://todomvc.com)
+
+## Implementation
+
+## Credit
+
+Created by [Stefan Höck](https://github.com/stefan-hoeck)
