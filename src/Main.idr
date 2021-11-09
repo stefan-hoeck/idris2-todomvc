@@ -1,117 +1,96 @@
-module Main
-
 import Control.Monad.State
 import Data.List
+import Data.String
 import Data.MSF.Trans
+import Generics.Derive
 import Rhone.JS
 
 %default total
-
---------------------------------------------------------------------------------
---          Model
---------------------------------------------------------------------------------
+%language ElabReflection
 
 record Item where
-  constructor MkItem
+  constructor MkI
   id   : Nat
   todo : String
   done : Bool
 
-data Ev = New | Clear | Abort Nat | Mark Bool
-        | Edit Nat | Del Nat | Upd Nat | Toggle Nat Bool
+data Ev = New | Clear | Mark Bool
+        | Edit Nat | Abort Nat | Delete Nat | Upd Nat | Toggle Nat Bool
 
-record App where
-  constructor MkApp
-  id       : Nat
-  items    : List Item
-  newEl    : HTMLInputElement
-  mainEl   : HTMLElement
-  listEl   : HTMLElement
-  footerEl : HTMLElement
-  countEl  : HTMLElement
-  clearEl  : HTMLButtonElement
-  allEl    : HTMLInputElement
+%runElab derive "Ev" [Generic,Eq]
 
---------------------------------------------------------------------------------
---          View
---------------------------------------------------------------------------------
+new : ElemRef HTMLInputElement
+new = Id Input "new-todo"
 
 liId : Nat -> ElemRef HTMLLIElement
-liId n = MkRef Li "item_\{show n}"
-
-viewId : Nat -> ElemRef HTMLDivElement
-viewId n = MkRef Div "view_\{show n}"
+liId n = Id Li "item_\{show n}"
 
 editId : Nat -> ElemRef HTMLInputElement
-editId n = MkRef Input "edit_\{show n}"
-
-refId : ElemRef t -> (Attribute ev)
-refId ref = id ref.id
+editId n = Id Input "edit_\{show n}"
 
 itemView : Item -> Node Ev
-itemView (MkItem n lbl done) =
-  li [ refId (liId n), class (if done then "completed" else "") ]
-     [ div [ refId (viewId n), class "view" ]
+itemView (MkI n lbl done) =
+  li [ ref (liId n), class (if done then "completed" else "") ]
+     [ div [ class "view" ]
            [ input [ class "toggle", type CheckBox, checked done 
                    , onChecked (Toggle n) ] []
            , label [ onDblClick (Edit n) ] [ Text lbl ]
-           , button [ class "destroy", onClick (Del n) ] []
-           ]
-     , input [ refId (editId n), class "edit", value lbl 
-             , onEnterDown (Upd n), onEscDown (Abort n), onBlur (Upd n) ] []
-     ]
+           , button [ class "destroy", onClick (Delete n) ] [] ]
+     , input [ ref (editId n), class "edit", value lbl 
+             , onEnterDown (Upd n), onEscDown (Abort n), onBlur (Upd n) ] [] ]
 
---------------------------------------------------------------------------------
---          Controller
---------------------------------------------------------------------------------
+ST : Type
+ST = List Item
 
-M : Type -> Type
-M = DomIO Ev JSIO
+newId : List Item -> Nat
+newId = maybe 0 (S . id) . getAt 0
 
--- attribute : (App -> HTMLElement) -> MSF MSt (Attribute Ev) ()
--- attribute f = fan [get >>^ f, id] >>> np setAttribute >>! lift
+mod : MonadState ST m => (i -> ST -> ST) -> MSF m i ()
+mod f = arr f >>! modify
 
-modItems : MonadState App m => (List Item -> List Item) -> m ()
-modItems f = modify $ record { items $= f }
+modAt : MonadState ST m => (i -> Item -> Item) -> MSF m (NP I [Nat,i]) ()
+modAt f = mod $ \[n,v] => map (\t => if t.id == n then f v t else t)
 
-modItem : MonadState App m => Nat -> (Item -> Maybe Item) -> m ()
-modItem n f = modItems $ mapMaybe (\i => if i.id == n then f i else Just i) 
+newVal : LiftJSIO m => MSF m i (Event String)
+newVal = valueOf new >>> runEffect (setValue new "") >>> trim ^>> isNot ""
 
-newId : MonadState App m => m Nat
-newId = modify (record { id $= S }) >> map id get
+countStr : Nat -> String
+countStr 1 = "<strong>1</strong> item left"
+countStr k = "<strong>\{show k}</strong> items left"
 
-data Cmd = Add Item | Delete Nat | Update Item | Redraw | DoNothing
+items : NP I [List Item, String] -> List (Node Ev)
+items [is,"#/active"]    = map itemView . filter (not . done) $ reverse is
+items [is,"#/completed"] = map itemView . filter done $ reverse is
+items [is,_]             = map itemView $ reverse is
 
-mod : Ev -> StateT App M ()
-mod New       =   [| MkItem newId (get >>= getValue . newEl) (pure False) |]
-              >>= \i => modItems (i ::)
-mod Clear     = modItems (filter $ not . done)
-mod (Abort k) = ?mod_rhs_3
-mod (Mark b)  = modItems (map $ record { done = b })
-mod (Edit k) = ?mod_rhs_5
-mod (Del k) = modItem k (const Nothing)
-mod (Upd k) = ?mod_rhs_7
-mod (Toggle k b) = modItem k $ Just . record { done = b }
+disp : MSF (StateT ST $ DomIO Ev JSIO) i ()
+disp = get >>-
+  [ fan [id, windowHash] >>> arr items >>! innerHtmlAtN (Id Ul "todo-list")
+  , isNil ^>- [hiddenAt (Id Section "main"), hiddenAt (Id Footer "footer")]
+  , all done ^>> isChecked (Id Input "toggle-all")
+  , count (not . done) ^>> countStr ^>> innerHtml (Id Span "todo-count") ]
 
-msf : MSF (StateT App M) Ev ()
+upd : MSF (StateT ST $ DomIO Ev JSIO) (NP I [Nat,String]) ()
+upd = bool (\[_,s] => null s) >>> collect
+        [ mod (\[i,_] => filter $ (/= i) . id)
+        , modAt (\s => record {todo = s}) ]
 
-ui : M (MSF M Ev (), JSIO ())
-ui = do
-  tdNew    <- getElementByClass "new-todo"
-  tdMain   <- getElementByClass "main"
-  tdList   <- getElementByClass "todo-list"
-  tdFooter <- getElementByClass "footer"
-  tdCount  <- getElementByClass "todo-count"
-  tdClear  <- getElementByClass "clear-completed"
-  tdAll    <- getElementByClass "toggle-all"
+msf : MSF (StateT ST $ DomIO Ev JSIO) Ev ()
+msf = (toI . unSOP . from) ^>> collect
+  [ newVal ?>> [| MkI (get >>^ newId) id (pure False) |] >>> mod (::) >>> disp
+  , mod (\_ => filter $ not . done) >>> disp
+  , mod (\[b] => map $ record {done = b}) >>> disp
+  , fan [ hd >>^ liId, const "editing" ] >>> attribute_ "class"
+  , disp
+  , mod (\[i] => filter $ (/= i) . id) >>> disp
+  , hd >>> fan [id, editId ^>> value >>^ trim] >>> upd >>> disp
+  , modAt (\b => record {done = b}) >>> disp ]
 
-  setAttributes (up tdNew)   [onEnterDown New]
-  setAttributes (up tdClear) [onClick Clear]
-  setAttributes (up tdAll)   [onChecked Mark]
-
-  let ini = MkApp 0 Nil tdNew tdMain tdList tdFooter tdCount tdClear tdAll
-
-  pure (loopState ini msf, pure ())
+ui : DomIO Ev JSIO (MSF (DomIO Ev JSIO) Ev (), JSIO ())
+ui =  setAttributes new [onEnterDown New]
+   >> setAttributes (Id Button "clear-completed") [onClick Clear]
+   >> setAttributes (Id Input "toggle-all") [onChecked Mark]
+   $> (loopState Nil msf, pure ())
 
 main : IO ()
 main = runJS . ignore $ reactimateDomIni Clear "todo" ui
