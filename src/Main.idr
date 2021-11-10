@@ -14,7 +14,7 @@ record Item where
   todo : String
   done : Bool
 
-data Ev = New | Clear | Mark Bool
+data Ev = New | Clear | Mark Bool | Hash
         | Edit Nat | Abort Nat | Delete Nat | Upd Nat | Toggle Nat Bool
 
 %runElab derive "Ev" [Generic,Eq]
@@ -63,12 +63,19 @@ items [is,"#/active"]    = map itemView . filter (not . done) $ reverse is
 items [is,"#/completed"] = map itemView . filter done $ reverse is
 items [is,_]             = map itemView $ reverse is
 
+selected : LiftJSIO m => (String -> Bool) -> (id : String) -> MSF m String ()
+selected p id = ifTrue p (const "selected") >>> attributeAt_ "class" (Id A id)
+
 disp : MSF (StateT ST $ DomIO Ev JSIO) i ()
-disp = get >>-
+disp = get >>> fan
   [ fan [id, windowHash] >>> arr items >>! innerHtmlAtN (Id Ul "todo-list")
   , isNil ^>- [hiddenAt (Id Section "main"), hiddenAt (Id Footer "footer")]
   , all done ^>> isChecked (Id Input "toggle-all")
   , count (not . done) ^>> countStr ^>> innerHtml (Id Span "todo-count") ]
+  >>> windowHash >>-
+        [ selected (== "#/active") "sel-active"
+        , selected (== "#/completed") "sel-completed"
+        , selected (\s => s /= "#/completed" && s /= "#/active") "sel-all" ]
 
 upd : MSF (StateT ST $ DomIO Ev JSIO) (NP I [Nat,String]) ()
 upd = bool (\[_,s] => null s) >>> collect
@@ -80,6 +87,7 @@ msf = (toI . unSOP . from) ^>> collect
   [ newVal ?>> [| MkI (get >>^ newId) id (pure False) |] >>> mod (::) >>> disp
   , mod (\_ => filter $ not . done) >>> disp
   , mod (\[b] => map $ record {done = b}) >>> disp
+  , disp
   , fan [ hd >>^ liId, const "editing" ] >>> attribute_ "class"
   , disp
   , mod (\[i] => filter $ (/= i) . id) >>> disp
@@ -87,9 +95,10 @@ msf = (toI . unSOP . from) ^>> collect
   , modAt (\b => record {done = b}) >>> disp ]
 
 ui : DomIO Ev JSIO (MSF (DomIO Ev JSIO) Ev (), JSIO ())
-ui =  setAttributes new [onEnterDown New]
-   >> setAttributes (Id Button "clear-completed") [onClick Clear]
-   >> setAttributes (Id Input "toggle-all") [onChecked Mark]
+ui =  setAttribute new (onEnterDown New)
+   >> setAttribute (Id Button "clear-completed") (onClick Clear)
+   >> setAttribute (Id Input "toggle-all") (onChecked Mark)
+   >> handleEvent Window (HashChange Hash)
    $> (loopState Nil msf, pure ())
 
 main : IO ()
