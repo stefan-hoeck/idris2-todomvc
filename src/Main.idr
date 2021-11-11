@@ -3,7 +3,9 @@ import Data.List
 import Data.String
 import Data.MSF.Trans
 import Generics.Derive
+import JSON
 import Rhone.JS
+import Web.Html
 
 %default total
 %language ElabReflection
@@ -13,6 +15,8 @@ record Item where
   id   : Nat
   todo : String
   done : Bool
+
+%runElab derive "Item" [Generic,Meta,Eq,FromJSON,ToJSON]
 
 data Ev = New | Clear | Mark Bool | Hash
         | Edit Nat | Abort Nat | Delete Nat | Upd Nat | Toggle Nat Bool
@@ -42,8 +46,8 @@ itemView (MkI n lbl done) =
 ST : Type
 ST = List Item
 
-newId : List Item -> Nat
-newId = maybe 0 (S . id) . getAt 0
+newId : MonadState ST m => MSF m i Nat
+newId = get >>^ (maybe 0 (S . id) . getAt 0)
 
 mod : MonadState ST m => (i -> ST -> ST) -> MSF m i ()
 mod f = arr f >>! modify
@@ -71,35 +75,39 @@ disp = get >>> fan
   [ fan [id, windowHash] >>> arr items >>! innerHtmlAtN (Id Ul "todo-list")
   , isNil ^>- [hiddenAt (Id Section "main"), hiddenAt (Id Footer "footer")]
   , all done ^>> isChecked (Id Input "toggle-all")
-  , count (not . done) ^>> countStr ^>> innerHtml (Id Span "todo-count") ]
+  , (not . any done) ^>> hiddenAt (Id Button "clear-completed")
+  , count (not . done) ^>> countStr ^>> innerHtml (Id Span "todo-count")
+  , encode ^>> setItemAt "todomvc-idris2" ]
   >>> windowHash >>-
         [ selected (== "#/active") "sel-active"
         , selected (== "#/completed") "sel-completed"
         , selected (\s => s /= "#/completed" && s /= "#/active") "sel-all" ]
 
-upd : MSF (StateT ST $ DomIO Ev JSIO) (NP I [Nat,String]) ()
-upd = bool (\[_,s] => null s) >>> collect
-        [ mod (\[i,_] => filter $ (/= i) . id)
-        , modAt (\s => record {todo = s}) ]
+update : MSF (StateT ST $ DomIO Ev JSIO) (NP I [Nat,String]) ()
+update = bool (\[_,s] => null s) >>> collect
+           [ mod (\[i,_] => filter $ (/= i) . id)
+           , modAt (\s => record {todo = s}) ]
 
-msf : MSF (StateT ST $ DomIO Ev JSIO) Ev ()
-msf = (toI . unSOP . from) ^>> collect
-  [ newVal ?>> [| MkI (get >>^ newId) id (pure False) |] >>> mod (::) >>> disp
+controller : MSF (StateT ST $ DomIO Ev JSIO) Ev ()
+controller = (toI . unSOP . from) ^>> collect
+  [ newVal ?>> [| MkI newId id (pure False) |] >>> mod (::) >>> disp
   , mod (\_ => filter $ not . done) >>> disp
   , mod (\[b] => map $ record {done = b}) >>> disp
   , disp
   , fan [ hd >>^ liId, const "editing" ] >>> attribute_ "class"
   , disp
   , mod (\[i] => filter $ (/= i) . id) >>> disp
-  , hd >>> fan [id, editId ^>> value >>^ trim] >>> upd >>> disp
+  , hd >>> fan [id, editId ^>> value >>^ trim] >>> update >>> disp
   , modAt (\b => record {done = b}) >>> disp ]
 
 ui : DomIO Ev JSIO (MSF (DomIO Ev JSIO) Ev (), JSIO ())
-ui =  setAttribute new (onEnterDown New)
-   >> setAttribute (Id Button "clear-completed") (onClick Clear)
-   >> setAttribute (Id Input "toggle-all") (onChecked Mark)
-   >> handleEvent Window (HashChange Hash)
-   $> (loopState Nil msf, pure ())
+ui =  do
+  setAttribute new (onEnterDown New)
+  setAttribute (Id Button "clear-completed") (onClick Clear)
+  setAttribute (Id Input "toggle-all") (onChecked Mark)
+  handleEvent Window (HashChange Hash)
+  ini <- liftJSIO (window >>= localStorage >>= (`getItem` "todomvc-idris2"))
+  pure (loopState (fromMaybe Nil $ ini >>= decodeMaybe) controller, pure ())
 
 main : IO ()
 main = runJS . ignore $ reactimateDomIni Clear "todo" ui
