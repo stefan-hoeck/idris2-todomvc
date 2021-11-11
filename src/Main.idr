@@ -67,9 +67,6 @@ items [is,"#/active"]    = map itemView . filter (not . done) $ reverse is
 items [is,"#/completed"] = map itemView . filter done $ reverse is
 items [is,_]             = map itemView $ reverse is
 
-selected : LiftJSIO m => (String -> Bool) -> (id : String) -> MSF m String ()
-selected p id = ifTrue p (const "selected") >>> attributeAt_ "class" (Id A id)
-
 disp : MSF (StateT ST $ DomIO Ev JSIO) i ()
 disp = get >>> fan
   [ fan [id, windowHash] >>> arr items >>! innerHtmlAtN (Id Ul "todo-list")
@@ -79,9 +76,9 @@ disp = get >>> fan
   , count (not . done) ^>> countStr ^>> innerHtml (Id Span "todo-count")
   , encode ^>> setItemAt "todomvc-idris2" ]
   >>> windowHash >>-
-        [ selected (== "#/active") "sel-active"
-        , selected (== "#/completed") "sel-completed"
-        , selected (\s => s /= "#/completed" && s /= "#/active") "sel-all" ]
+        [ ifIs "#/active"    "selected" >>> classAt (Id A "sel-active")
+        , ifIs "#/completed" "selected" >>> classAt (Id A "sel-completed")
+        , ifIs "#/"          "selected" >>> classAt (Id A "sel-all") ]
 
 update : MSF (StateT ST $ DomIO Ev JSIO) (NP I [Nat,String]) ()
 update = bool (\[_,s] => null s) >>> collect
@@ -110,4 +107,4 @@ ui =  do
   pure (loopState (fromMaybe Nil $ ini >>= decodeMaybe) controller, pure ())
 
 main : IO ()
-main = runJS . ignore $ reactimateDomIni Clear "todo" ui
+main = runJS . ignore $ reactimateDomIni Hash "todo" ui
