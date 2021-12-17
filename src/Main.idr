@@ -83,19 +83,19 @@ disp = get >>> fan
 update : MSF (StateT ST $ DomIO Ev JSIO) (NP I [Nat,String]) ()
 update = bool (\[_,s] => null s) >>> collect
            [ mod (\[i,_] => filter $ (/= i) . id)
-           , modAt (\s => record {todo = s}) ]
+           , modAt (\s => {todo := s}) ]
 
 controller : MSF (StateT ST $ DomIO Ev JSIO) Ev ()
 controller = (toI . unSOP . from) ^>> collect
   [ newVal ?>> [| MkI newId id (pure False) |] >>> mod (::) >>> disp
   , mod (\_ => filter $ not . done) >>> disp
-  , mod (\[b] => map $ record {done = b}) >>> disp
+  , mod (\[b] => map {done := b}) >>> disp
   , disp
   , fan [ hd >>^ liId, const "editing" ] >>> attribute_ "class"
   , disp
   , mod (\[i] => filter $ (/= i) . id) >>> disp
   , hd >>> fan [id, editId ^>> value >>^ trim] >>> update >>> disp
-  , modAt (\b => record {done = b}) >>> disp ]
+  , modAt (\b => {done := b}) >>> disp ]
 
 ui : DomIO Ev JSIO (MSF (DomIO Ev JSIO) Ev (), JSIO ())
 ui =  do
